@@ -42,6 +42,7 @@ import * as path from 'node:path';
 import { doesToolInvocationMatch } from '../utils/tool-utils.js';
 import levenshtein from 'fast-levenshtein';
 import { ShellToolInvocation } from '../tools/shell.js';
+import { LogObjectType } from '../core/session-logger.js';
 
 export type ValidatingToolCall = {
   status: 'validating';
@@ -663,6 +664,9 @@ export class CoreToolScheduler {
         );
       }
       const requestsToProcess = Array.isArray(request) ? request : [request];
+      this.config
+        .getSessionLogger()
+        .log(LogObjectType.TOOL_CALL_SCHEDULE, requestsToProcess);
 
       const newToolCalls: ToolCall[] = requestsToProcess.map(
         (reqInfo): ToolCall => {
@@ -1122,6 +1126,10 @@ export class CoreToolScheduler {
     if (this.toolCalls.length > 0 && allCallsAreTerminal) {
       const completedCalls = [...this.toolCalls] as CompletedToolCall[];
       this.toolCalls = [];
+
+      this.config
+        .getSessionLogger()
+        .log(LogObjectType.TOOL_CALL_RESULT, completedCalls);
 
       for (const call of completedCalls) {
         logToolCall(this.config, new ToolCallEvent(call));

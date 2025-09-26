@@ -35,6 +35,7 @@ import {
   toCountTokenRequest,
   toGenerateContentRequest,
 } from './converter.js';
+import { LogObjectType, SessionLogger } from '../core/session-logger.js';
 
 /** HTTP options to be used in each of the requests. */
 export interface HttpOptions {
@@ -52,6 +53,7 @@ export class CodeAssistServer implements ContentGenerator {
     readonly httpOptions: HttpOptions = {},
     readonly sessionId?: string,
     readonly userTier?: UserTierId,
+    readonly sessionLogger?: SessionLogger,
   ) {}
 
   async generateContentStream(
@@ -154,8 +156,14 @@ export class CodeAssistServer implements ContentGenerator {
     req: object,
     signal?: AbortSignal,
   ): Promise<T> {
+    const url = this.getMethodUrl(method);
+    this.sessionLogger?.log(LogObjectType.MODEL_REQUEST, {
+      url,
+      method: 'POST',
+      body: req,
+    });
     const res = await this.client.request({
-      url: this.getMethodUrl(method),
+      url,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -165,12 +173,22 @@ export class CodeAssistServer implements ContentGenerator {
       body: JSON.stringify(req),
       signal,
     });
+    this.sessionLogger?.log(LogObjectType.MODEL_RESPONSE, {
+      url,
+      method: 'POST',
+      response: res.data,
+    });
     return res.data as T;
   }
 
   async requestGet<T>(method: string, signal?: AbortSignal): Promise<T> {
+    const url = this.getMethodUrl(method);
+    this.sessionLogger?.log(LogObjectType.MODEL_REQUEST, {
+      url,
+      method: 'GET',
+    });
     const res = await this.client.request({
-      url: this.getMethodUrl(method),
+      url,
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -178,6 +196,11 @@ export class CodeAssistServer implements ContentGenerator {
       },
       responseType: 'json',
       signal,
+    });
+    this.sessionLogger?.log(LogObjectType.MODEL_RESPONSE, {
+      url,
+      method: 'GET',
+      response: res.data,
     });
     return res.data as T;
   }
@@ -187,8 +210,17 @@ export class CodeAssistServer implements ContentGenerator {
     req: object,
     signal?: AbortSignal,
   ): Promise<AsyncGenerator<T>> {
+    const url = this.getMethodUrl(method);
+    this.sessionLogger?.log(LogObjectType.MODEL_REQUEST, {
+      url,
+      method: 'POST',
+      params: {
+        alt: 'sse',
+      },
+      body: req,
+    });
     const res = await this.client.request({
-      url: this.getMethodUrl(method),
+      url,
       method: 'POST',
       params: {
         alt: 'sse',
@@ -202,6 +234,7 @@ export class CodeAssistServer implements ContentGenerator {
       signal,
     });
 
+    const self = this;
     return (async function* (): AsyncGenerator<T> {
       const rl = readline.createInterface({
         input: res.data as NodeJS.ReadableStream,
@@ -215,7 +248,13 @@ export class CodeAssistServer implements ContentGenerator {
           if (bufferedLines.length === 0) {
             continue; // no data to yield
           }
-          yield JSON.parse(bufferedLines.join('\n')) as T;
+          const chunk = JSON.parse(bufferedLines.join('\n')) as T;
+          self.sessionLogger?.log(LogObjectType.MODEL_RESPONSE, {
+            url,
+            method: 'POST',
+            response: chunk,
+          });
+          yield chunk;
           bufferedLines = []; // Reset the buffer after yielding
         } else if (line.startsWith('data: ')) {
           bufferedLines.push(line.slice(6).trim());
