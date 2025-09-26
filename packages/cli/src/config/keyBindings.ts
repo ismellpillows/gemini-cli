@@ -39,6 +39,7 @@ export enum Command {
   // Text input
   SUBMIT = 'submit',
   NEWLINE = 'newline',
+  COPY_PROMPT_TEXT = 'copyPromptText',
 
   // External tools
   OPEN_EXTERNAL_EDITOR = 'openExternalEditor',
@@ -104,7 +105,7 @@ export const defaultKeyBindings: KeyBindingConfig = {
   // Text deletion
   [Command.KILL_LINE_RIGHT]: [{ key: 'k', ctrl: true }],
   [Command.KILL_LINE_LEFT]: [{ key: 'u', ctrl: true }],
-  [Command.CLEAR_INPUT]: [{ key: 'c', ctrl: true }],
+  [Command.CLEAR_INPUT]: [{ key: 'x', ctrl: true }],
   // Added command (meta/alt/option) for mac compatibility
   [Command.DELETE_WORD_BACKWARD]: [
     { key: 'backspace', ctrl: true },
@@ -147,10 +148,12 @@ export const defaultKeyBindings: KeyBindingConfig = {
     { key: 'j', ctrl: true },
   ],
 
+  [Command.COPY_PROMPT_TEXT]: [{ key: 'c', ctrl: true }],
+
   // External tools
   [Command.OPEN_EXTERNAL_EDITOR]: [
-    { key: 'x', ctrl: true },
-    { sequence: '\x18', ctrl: true },
+    // { key: 'x', ctrl: true },
+    // { sequence: '\x18', ctrl: true },
   ],
   [Command.PASTE_CLIPBOARD_IMAGE]: [{ key: 'v', ctrl: true }],
 
@@ -167,7 +170,7 @@ export const defaultKeyBindings: KeyBindingConfig = {
   // Note: original logic ONLY checked ctrl=false, ignored meta/shift/paste
   [Command.SUBMIT_REVERSE_SEARCH]: [{ key: 'return', ctrl: false }],
   [Command.ACCEPT_SUGGESTION_REVERSE_SEARCH]: [{ key: 'tab' }],
-  [Command.TOGGLE_SHELL_INPUT_FOCUS]: [{ key: 'f', ctrl: true }],
+  [Command.TOGGLE_SHELL_INPUT_FOCUS]: [{ key: 'b', ctrl: true }],
 
   // Suggestion expansion
   [Command.EXPAND_SUGGESTION]: [{ key: 'right' }],

@@ -102,7 +102,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
         {isThisShellFocusable && (
           <Box marginLeft={1} flexShrink={0}>
             <Text color={theme.text.accent}>
-              {isThisShellFocused ? '(Focused)' : '(ctrl+f to focus)'}
+              {isThisShellFocused ? '(Focused)' : '(ctrl+b to focus)'}
             </Text>
           </Box>
         )}

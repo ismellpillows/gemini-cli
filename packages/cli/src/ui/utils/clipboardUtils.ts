@@ -140,6 +140,110 @@ export async function cleanupOldClipboardImages(
       }
     }
   } catch {
-    // Ignore errors in cleanup
+  }
+}
+
+/**
+ * Writes text to the clipboard.
+ * - If running inside a terminal that supports OSC 52 (e.g. VS Code Integrated Terminal),
+ *   this copies to the **client** clipboard (works over SSH/Remote).
+ * - Otherwise falls back to platform clipboard tools on the **host** (server) side.
+ *
+ * Throws if all strategies fail.
+ */
+export async function writeTextToClipboard(text: string): Promise<void> {
+  // 1) Prefer OSC 52 so copies go to the local client clipboard in remote sessions.
+  if (await tryWriteClipboardOSC52(text)) return;
+
+  // 2) Fallback to server-side OS clipboard tools.
+  if (await tryWriteClipboardOS(text)) return;
+
+  throw new Error(
+    'Failed to write to clipboard (OSC 52 unsupported/blocked and no OS clipboard tool found).'
+  );
+}
+
+/** Try copying via OSC 52 so the terminal client (e.g. VS Code) receives it. */
+async function tryWriteClipboardOSC52(text: string): Promise<boolean> {
+  try {
+    // Some terminals reject very large payloads; keep it reasonable.
+    const base64 = Buffer.from(text, 'utf8').toString('base64');
+    const MAX_BASE64 = 100_000; // ~100 KB; tweak if you need larger copies
+    if (base64.length > MAX_BASE64) return false;
+
+    const osc52 = `\u001B]52;c;${base64}\u0007`; // ESC ] 52 ; c ; <b64> BEL
+
+    // Prefer stdout if we have a TTY; otherwise try writing to /dev/tty (POSIX).
+    if (process.stdout.isTTY) {
+      process.stdout.write(osc52);
+      return true;
+    }
+
+    if (process.platform !== 'win32') {
+      try {
+        const fh = await fs.open('/dev/tty', 'a');
+        try {
+          await fh.write(osc52);
+          return true;
+        } finally {
+          await fh.close();
+        }
+      } catch {
+        // no /dev/tty or not permitted — fall through
+      }
+    }
+  } catch {
+    // ignore and fall back
+  }
+  return false;
+}
+
+/** Fallback to host OS clipboard tools (this affects the *server* clipboard). */
+async function tryWriteClipboardOS(text: string): Promise<boolean> {
+  // Use a temp file + shell redirection to avoid quoting/encoding pitfalls
+  const baseDir = process.cwd();
+  const tempDir = path.join(baseDir, '.gemini-clipboard');
+  const tmpPath = path.join(tempDir, `text-${Date.now()}.txt`);
+
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.writeFile(tmpPath, text, 'utf8');
+
+    if (process.platform === 'darwin') {
+      // macOS: pbcopy
+      await spawnAsync('bash', ['-lc', `pbcopy < "${tmpPath}"`]);
+      return true;
+    }
+
+    if (process.platform === 'win32') {
+      // Windows: PowerShell Set-Clipboard with UTF-8, using literal path to handle specials
+      const ps = [
+        '-NoProfile',
+        '-Command',
+        `Get-Content -Raw -LiteralPath '${tmpPath.replace(/'/g, "''")}' | Set-Clipboard`,
+      ];
+      await spawnAsync('powershell.exe', ps);
+      return true;
+    }
+
+    // Linux/Unix: try wl-copy first, then xclip
+    try {
+      await spawnAsync('bash', ['-lc', `command -v wl-copy >/dev/null 2>&1 && wl-copy < "${tmpPath}"`]);
+      return true;
+    } catch {
+      // ignore and try xclip
+    }
+    await spawnAsync('bash', [
+      '-lc',
+      `command -v xclip >/dev/null 2>&1 && xclip -selection clipboard < "${tmpPath}"`,
+    ]);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    // Best-effort cleanup
+    try {
+      await fs.unlink(tmpPath);
+    } catch {}
   }
 }

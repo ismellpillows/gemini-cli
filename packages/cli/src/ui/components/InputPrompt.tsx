@@ -29,6 +29,7 @@ import {
   clipboardHasImage,
   saveClipboardImage,
   cleanupOldClipboardImages,
+  writeTextToClipboard,
 } from '../utils/clipboardUtils.js';
 import * as path from 'node:path';
 import { SCREEN_READER_USER_PREFIX } from '../textConstants.js';
@@ -584,11 +585,19 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
         buffer.move('end');
         return;
       }
-      // Ctrl+C (Clear input)
+      // Ctrl+X (Clear input)
       if (keyMatchers[Command.CLEAR_INPUT](key)) {
         if (buffer.text.length > 0) {
           buffer.setText('');
           resetCompletionState();
+        }
+        return;
+      }
+
+      // Ctrl+C (Copy input)
+      if (keyMatchers[Command.COPY_PROMPT_TEXT](key)) {
+        if (buffer.text.length > 0) {
+          writeTextToClipboard(buffer.text);
         }
         return;
       }
