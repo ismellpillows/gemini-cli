@@ -74,6 +74,7 @@ import { PolicyEngine } from '../policy/policy-engine.js';
 import type { PolicyEngineConfig } from '../policy/types.js';
 import type { UserTierId } from '../code_assist/types.js';
 import { ProxyAgent, setGlobalDispatcher } from 'undici';
+import { SessionLogger } from '../core/session-logger.js';
 
 export enum ApprovalMode {
   DEFAULT = 'default',
@@ -337,6 +338,7 @@ export class Config {
   private readonly policyEngine: PolicyEngine;
   private readonly outputSettings: OutputSettings;
   private readonly useModelRouter: boolean;
+  private readonly sessionLogger!: SessionLogger;
 
   constructor(params: ConfigParameters) {
     this.sessionId = params.sessionId;
@@ -433,6 +435,7 @@ export class Config {
     this.outputSettings = {
       format: params.output?.format ?? OutputFormat.TEXT,
     };
+    this.sessionLogger = new SessionLogger(this.sessionId, this.storage);
 
     if (params.contextFileName) {
       setGeminiMdFilename(params.contextFileName);
@@ -457,6 +460,8 @@ export class Config {
       throw Error('Config was already initialized');
     }
     this.initialized = true;
+
+    await this.sessionLogger.initialize();
 
     // Initialize centralized FileDiscoveryService
     this.getFileService();
@@ -976,6 +981,10 @@ export class Config {
 
   getPolicyEngine(): PolicyEngine {
     return this.policyEngine;
+  }
+
+  getSessionLogger(): SessionLogger {
+    return this.sessionLogger;
   }
 
   async createToolRegistry(): Promise<ToolRegistry> {
