@@ -32,6 +32,7 @@ import {
 } from '../utils/clipboardUtils.js';
 import * as path from 'node:path';
 import { SCREEN_READER_USER_PREFIX } from '../textConstants.js';
+import { copyToClipboard } from '../utils/commandUtils.js';
 export interface InputPromptProps {
   buffer: TextBuffer;
   onSubmit: (value: string) => void;
@@ -584,11 +585,19 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
         buffer.move('end');
         return;
       }
-      // Ctrl+C (Clear input)
+      // Ctrl+X (Clear input)
       if (keyMatchers[Command.CLEAR_INPUT](key)) {
         if (buffer.text.length > 0) {
           buffer.setText('');
           resetCompletionState();
+        }
+        return;
+      }
+
+      // Ctrl+C (Copy input)
+      if (keyMatchers[Command.COPY_PROMPT_TEXT](key)) {
+        if (buffer.text.length > 0) {
+          copyToClipboard(buffer.text);
         }
         return;
       }
