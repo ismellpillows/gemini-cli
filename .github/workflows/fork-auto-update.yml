@@ -1,0 +1,227 @@
+name: 'Fork Auto-Update'
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # Daily at 2 AM UTC
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Force update even if versions match'
+        required: false
+        type: 'boolean'
+        default: false
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: 'Checkout'
+        uses: 'actions/checkout@v4'
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: 'Setup Node.js'
+        uses: 'actions/setup-node@v4'
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: 'Configure Git'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      
+      - name: 'Add upstream remote'
+        run: |
+          git remote add upstream https://github.com/google-gemini/gemini-cli.git || true
+          git fetch upstream --tags
+      
+      - name: 'Install dependencies'
+        run: npm ci
+      
+      - name: 'Check for new version'
+        id: check
+        run: |
+          VERSION_INFO=$(node scripts/check-upstream-version.js)
+          echo "version_info=$VERSION_INFO"
+          echo "$VERSION_INFO" | jq .
+          
+          LATEST=$(echo "$VERSION_INFO" | jq -r .latest)
+          CURRENT=$(echo "$VERSION_INFO" | jq -r .current)
+          UPDATE_NEEDED=$(echo "$VERSION_INFO" | jq -r .updateNeeded)
+          UPSTREAM_TAG=$(echo "$VERSION_INFO" | jq -r .upstreamTag)
+          
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "update_needed=$UPDATE_NEEDED" >> $GITHUB_OUTPUT
+          echo "upstream_tag=$UPSTREAM_TAG" >> $GITHUB_OUTPUT
+          
+          if [ "${{ github.event.inputs.force_update }}" = "true" ]; then
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: 'Find base commit'
+        if: steps.check.outputs.update_needed == 'true'
+        id: base
+        run: |
+          # Find the last upstream tag that was used as base
+          BASE_TAG=$(git describe --tags --abbrev=0 --match="v*.*.*" --exclude="*-nightly*" --exclude="*-preview*" 2>/dev/null || echo "v0.6.1")
+          echo "base_tag=$BASE_TAG" >> $GITHUB_OUTPUT
+          echo "Base tag: $BASE_TAG"
+      
+      - name: 'Attempt rebase'
+        if: steps.check.outputs.update_needed == 'true'
+        id: rebase
+        run: |
+          set +e  # Don't exit on error
+          
+          LATEST_VERSION="${{ steps.check.outputs.latest }}"
+          UPSTREAM_TAG="${{ steps.check.outputs.upstream_tag }}"
+          BASE_TAG="${{ steps.base.outputs.base_tag }}"
+          BRANCH_NAME="update-to-${LATEST_VERSION}"
+          
+          echo "Rebasing from $BASE_TAG to $UPSTREAM_TAG"
+          
+          # Check if upstream tag exists
+          if ! git rev-parse "$UPSTREAM_TAG" >/dev/null 2>&1; then
+            echo "❌ Upstream tag $UPSTREAM_TAG not found"
+            echo "success=false" >> $GITHUB_OUTPUT
+            echo "error=upstream_tag_not_found" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Create branch from upstream tag
+          git checkout -b "$BRANCH_NAME" "$UPSTREAM_TAG"
+          
+          # Get list of custom commits
+          CUSTOM_COMMITS=$(git log --reverse --pretty=format:"%H" "$BASE_TAG..origin/main" 2>/dev/null || echo "")
+          
+          if [ -z "$CUSTOM_COMMITS" ]; then
+            echo "⚠️  No custom commits found between $BASE_TAG and main"
+            echo "success=false" >> $GITHUB_OUTPUT
+            echo "error=no_custom_commits" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "Custom commits to rebase:"
+          echo "$CUSTOM_COMMITS"
+          
+          # Attempt to cherry-pick each commit
+          CONFLICTS=false
+          for commit in $CUSTOM_COMMITS; do
+            echo "Cherry-picking $commit..."
+            if ! git cherry-pick "$commit"; then
+              echo "❌ Conflict detected on commit $commit"
+              CONFLICTS=true
+              git cherry-pick --abort
+              break
+            fi
+          done
+          
+          if [ "$CONFLICTS" = true ]; then
+            echo "success=false" >> $GITHUB_OUTPUT
+            echo "conflicts=true" >> $GITHUB_OUTPUT
+            
+            # Create conflict resolution branch for PR
+            git checkout -b "conflict-$BRANCH_NAME" "$UPSTREAM_TAG"
+            git push origin "conflict-$BRANCH_NAME"
+          else
+            echo "✅ Rebase successful"
+            echo "success=true" >> $GITHUB_OUTPUT
+            git push origin "$BRANCH_NAME"
+          fi
+      
+      - name: 'Merge to main'
+        if: steps.rebase.outputs.success == 'true'
+        run: |
+          BRANCH_NAME="update-to-${{ steps.check.outputs.latest }}"
+          git checkout main
+          git merge "$BRANCH_NAME" --ff-only
+          git push origin main
+          git push origin --delete "$BRANCH_NAME"
+      
+      - name: 'Build bundle'
+        if: steps.rebase.outputs.success == 'true'
+        run: |
+          npm ci
+          npm run bundle
+      
+      - name: 'Create GitHub Release'
+        if: steps.rebase.outputs.success == 'true'
+        run: |
+          LATEST_VERSION="${{ steps.check.outputs.latest }}"
+          RELEASE_TAG="v${LATEST_VERSION}-custom"
+          
+          # Create release with bundle
+          gh release create "$RELEASE_TAG" \
+            --title "v${LATEST_VERSION} (Custom Fork)" \
+            --notes "Automated release based on upstream @google/gemini-cli v${LATEST_VERSION}
+          
+          ## Custom Changes
+          - Custom keybinds and clipboard support
+          - Detailed logging
+          - Custom system prompts
+          
+          ## Installation
+          \`\`\`bash
+          curl -L -o ~/.local/bin/gemini https://github.com/ismellpillows/gemini-cli/releases/download/${RELEASE_TAG}/gemini.js
+          chmod +x ~/.local/bin/gemini
+          \`\`\`
+          
+          The CLI will auto-update on next run." \
+            bundle/gemini.js
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: 'Create PR for conflicts'
+        if: steps.rebase.outputs.conflicts == 'true'
+        run: |
+          LATEST_VERSION="${{ steps.check.outputs.latest }}"
+          UPSTREAM_TAG="${{ steps.check.outputs.upstream_tag }}"
+          
+          gh pr create \
+            --base main \
+            --head "conflict-update-to-${LATEST_VERSION}" \
+            --title "⚠️  Update to v${LATEST_VERSION} - Manual Resolution Required" \
+            --body "## Rebase Conflicts Detected
+          
+          The automatic rebase from **${{ steps.base.outputs.base_tag }}** to **${UPSTREAM_TAG}** encountered conflicts.
+          
+          ### What to do:
+          1. Checkout this branch: \`git fetch origin && git checkout conflict-update-to-${LATEST_VERSION}\`
+          2. Manually rebase: \`git rebase -i ${UPSTREAM_TAG}\`
+          3. Resolve conflicts
+          4. Force push: \`git push origin conflict-update-to-${LATEST_VERSION} --force\`
+          5. Merge this PR
+          
+          ### Custom commits to preserve:
+          - Custom keybinds and clipboard support
+          - Detailed logging  
+          - Custom system prompts
+          
+          After merging, manually run the workflow to create the release." \
+            --label "rebase-conflict,automation"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: 'Summary'
+        if: always()
+        run: |
+          echo "## Update Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Current version: ${{ steps.check.outputs.current }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Latest upstream: ${{ steps.check.outputs.latest }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Update needed: ${{ steps.check.outputs.update_needed }}" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.rebase.outputs.success }}" = "true" ]; then
+            echo "- ✅ Rebase successful" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Release created" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.rebase.outputs.conflicts }}" = "true" ]; then
+            echo "- ⚠️  Conflicts detected - PR created" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.check.outputs.update_needed }}" = "false" ]; then
+            echo "- ℹ️  Already up to date" >> $GITHUB_STEP_SUMMARY
+          fi
