@@ -8,6 +8,7 @@ import type { UpdateInfo } from 'update-notifier';
 import updateNotifier from 'update-notifier';
 import semver from 'semver';
 import { getPackageJson } from '../../utils/package.js';
+import https from 'node:https';
 
 export const FETCH_TIMEOUT_MS = 2000;
 
@@ -39,6 +40,66 @@ function getBestAvailableUpdate(
   return semver.gt(stableVer, nightlyVer) ? stable : nightly;
 }
 
+/**
+ * Check GitHub releases for custom fork updates
+ */
+async function checkGitHubReleases(currentVersion: string): Promise<UpdateInfo | null> {
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'api.github.com',
+      path: '/repos/ismellpillows/gemini-cli/releases/latest',
+      method: 'GET',
+      headers: {
+        'User-Agent': 'gemini-cli-custom',
+      },
+      timeout: FETCH_TIMEOUT_MS,
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      
+      res.on('end', () => {
+        try {
+          if (res.statusCode !== 200) {
+            resolve(null);
+            return;
+          }
+          
+          const release = JSON.parse(data);
+          // Tag format: v0.6.1-custom
+          const tagName = release.tag_name || '';
+          const latestVersion = tagName.replace(/^v/, '').replace(/-custom$/, '');
+          
+          if (latestVersion && semver.valid(latestVersion) && semver.gt(latestVersion, currentVersion)) {
+            resolve({
+              latest: latestVersion,
+              current: currentVersion,
+              type: 'latest',
+              name: '@google/gemini-cli',
+            });
+          } else {
+            resolve(null);
+          }
+        } catch (e) {
+          resolve(null);
+        }
+      });
+    });
+
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+    
+    req.end();
+  });
+}
+
 export async function checkForUpdates(): Promise<UpdateObject | null> {
   try {
     // Skip update check when running from source (development mode)
@@ -51,6 +112,18 @@ export async function checkForUpdates(): Promise<UpdateObject | null> {
     }
 
     const { name, version: currentVersion } = packageJson;
+    
+    // First, try checking GitHub releases for custom fork
+    const githubUpdate = await checkGitHubReleases(currentVersion);
+    if (githubUpdate) {
+      const message = `Gemini CLI update available! ${currentVersion} → ${githubUpdate.latest}`;
+      return {
+        message,
+        update: githubUpdate,
+      };
+    }
+
+    // Fallback to npm checking for regular installations
     const isNightly = currentVersion.includes('nightly');
     const createNotifier = (distTag: 'latest' | 'nightly') =>
       updateNotifier({

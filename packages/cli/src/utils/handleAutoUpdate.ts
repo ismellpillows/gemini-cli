@@ -47,8 +47,42 @@ export function handleAutoUpdate(
   ) {
     return;
   }
-  const isNightly = info.update.latest.includes('nightly');
 
+  // For GitHub-based standalone installations, download directly
+  if (installationInfo.updateCommand.includes('github.com/ismellpillows/gemini-cli')) {
+    const updateCommand = installationInfo.updateCommand.replace(
+      '/releases/latest/download/',
+      `/releases/download/v${info.update.latest}-custom/`,
+    );
+    const updateProcess = spawnFn(updateCommand, { stdio: 'pipe', shell: true });
+    let errorOutput = '';
+    updateProcess.stderr.on('data', (data) => {
+      errorOutput += data.toString();
+    });
+
+    updateProcess.on('close', (code) => {
+      if (code === 0) {
+        updateEventEmitter.emit('update-success', {
+          message:
+            'Update successful! The new version will be used on your next run.',
+        });
+      } else {
+        updateEventEmitter.emit('update-failed', {
+          message: `Automatic update failed. Please try updating manually. (command: ${updateCommand}, stderr: ${errorOutput.trim()})`,
+        });
+      }
+    });
+
+    updateProcess.on('error', (err) => {
+      updateEventEmitter.emit('update-failed', {
+        message: `Automatic update failed. Please try updating manually. (error: ${err.message})`,
+      });
+    });
+    return updateProcess;
+  }
+
+  // For npm-based installations, use the existing logic
+  const isNightly = info.update.latest.includes('nightly');
   const updateCommand = installationInfo.updateCommand.replace(
     '@latest',
     isNightly ? '@nightly' : `@${info.update.latest}`,

@@ -43,7 +43,24 @@ export function getInstallationInfo(
     const normalizedProjectRoot = projectRoot?.replace(/\\/g, '/');
     const isGit = isGitRepository(process.cwd());
 
-    // Check for local git clone first
+    // Check for standalone GitHub release bundle first
+    if (
+      realPath.includes('/.local/bin/gemini') ||
+      realPath.includes('/usr/local/bin/gemini') ||
+      (realPath.includes('/bin/gemini') && !realPath.includes('/node_modules/'))
+    ) {
+      const updateCommand = `curl -L -o "${realPath}" https://github.com/ismellpillows/gemini-cli/releases/latest/download/gemini.js && chmod +x "${realPath}"`;
+      return {
+        packageManager: PackageManager.UNKNOWN,
+        isGlobal: true,
+        updateCommand,
+        updateMessage: isAutoUpdateDisabled
+          ? 'Update available from GitHub releases. Run the update command shown above.'
+          : 'Installed from GitHub release. Attempting to automatically update now...',
+      };
+    }
+
+    // Check for local git clone
     if (
       isGit &&
       normalizedProjectRoot &&
