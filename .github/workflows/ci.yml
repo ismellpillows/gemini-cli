@@ -1,15 +1,15 @@
 name: 'Testing: CI'
 
 on:
-  push:
-    branches:
-      - 'main'
-      - 'release/**'
-  pull_request:
-    branches:
-      - 'main'
-      - 'release/**'
-  merge_group:
+#   push:
+#     branches:
+#       - 'main'
+#       - 'release/**'
+#   pull_request:
+#     branches:
+#       - 'main'
+#       - 'release/**'
+#   merge_group:
   workflow_dispatch:
 
 concurrency:

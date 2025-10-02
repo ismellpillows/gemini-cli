@@ -1,18 +1,19 @@
 name: 'Testing: E2E'
 
 on:
-  push:
-    branches:
-      - 'main'
-  # This will run for PRs from the base repository, providing secrets.
-  pull_request:
-    branches:
-      - 'main'
-      - 'release/**'
-  # This will run for PRs from forks when a label is added.
-  pull_request_target:
-    types: ['labeled']
-  merge_group:
+#   push:
+#     branches:
+#       - 'main'
+#   # This will run for PRs from the base repository, providing secrets.
+#   pull_request:
+#     branches:
+#       - 'main'
+#       - 'release/**'
+#   # This will run for PRs from forks when a label is added.
+#   pull_request_target:
+#     types: ['labeled']
+#   merge_group:
+  workflow_dispatch:
 
 concurrency:
   group: '${{ github.workflow }}-${{ github.head_ref || github.ref }}'
