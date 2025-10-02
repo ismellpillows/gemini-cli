@@ -1,8 +1,8 @@
 name: 'Generate Weekly Community Report 📊'
 
 on:
-  schedule:
-    - cron: '0 12 * * 1' # Run at 12:00 UTC on Monday
+  # Disabled for fork - schedule:
+  #   - cron: '0 12 * * 1' # Run at 12:00 UTC on Monday
   workflow_dispatch:
     inputs:
       days:

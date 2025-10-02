@@ -1,9 +1,9 @@
 name: 'No Response'
 
-# Run as a daily cron at 1:45 AM
+# Disabled for fork
 on:
-  schedule:
-    - cron: '45 1 * * *'
+  # schedule:
+  #   - cron: '45 1 * * *'
   workflow_dispatch:
 
 jobs:
