@@ -19,6 +19,7 @@ jobs:
       pull-requests: write
     env:
       GH_AUTOMATION_TOKEN: ${{ secrets.GH_PAT != '' && secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+      REPO_OWNER: ${{ github.repository_owner }}
     steps:
       - name: 'Checkout'
         uses: 'actions/checkout@v4'
@@ -244,6 +245,19 @@ jobs:
           CHERRY_PICK_COMMAND="${CONFLICT_COMMIT:-<commit-sha>}"
           CHERRY_PICK_TARGET="${CONFLICT_COMMIT_SHORT:-the next commit}"
 
+          git fetch origin main --depth=1
+
+          if gh pr view --head "$BRANCH_NAME" >/dev/null 2>&1; then
+            echo "PR already exists for $BRANCH_NAME; skipping creation."
+            exit 0
+          fi
+
+          COMMITS_AHEAD=$(git rev-list --count "origin/main..$BRANCH_NAME" 2>/dev/null || echo 0)
+          if [ "$COMMITS_AHEAD" -eq 0 ]; then
+            echo "No commits ahead of main for $BRANCH_NAME; skipping PR creation."
+            exit 0
+          fi
+
           PR_BODY=$(mktemp)
           CONFLICT_NOTE=""
           if [ -n "$CONFLICT_SUBJECT" ]; then
@@ -278,9 +292,11 @@ jobs:
             printf '%s\n' "4. Push updates: \`git push origin $BRANCH_NAME --force-with-lease\`."
           } > "$PR_BODY"
 
+          HEAD_REF="$REPO_OWNER:$BRANCH_NAME"
+
           gh pr create \
             --base main \
-            --head "$BRANCH_NAME" \
+            --head "$HEAD_REF" \
             --title "Update to v${LATEST_VERSION} - manual follow-up required" \
             --body-file "$PR_BODY"
           rm "$PR_BODY"
