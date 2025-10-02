@@ -19,7 +19,7 @@ jobs:
       pull-requests: write
     env:
       GH_AUTOMATION_TOKEN: ${{ secrets.GH_PAT != '' && secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-      REPO_OWNER: ${{ github.repository_owner }}
+      GH_REPOSITORY: ${{ github.repository }}
     steps:
       - name: 'Checkout'
         uses: 'actions/checkout@v4'
@@ -292,11 +292,10 @@ jobs:
             printf '%s\n' "4. Push updates: \`git push origin $BRANCH_NAME --force-with-lease\`."
           } > "$PR_BODY"
 
-          HEAD_REF="$REPO_OWNER:$BRANCH_NAME"
-
           gh pr create \
+            --repo "$GH_REPOSITORY" \
             --base main \
-            --head "$HEAD_REF" \
+            --head "$BRANCH_NAME" \
             --title "Update to v${LATEST_VERSION} - manual follow-up required" \
             --body-file "$PR_BODY"
           rm "$PR_BODY"
