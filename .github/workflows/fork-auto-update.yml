@@ -77,63 +77,112 @@ jobs:
         if: steps.check.outputs.update_needed == 'true'
         id: rebase
         run: |
-          set +e  # Don't exit on error
-          
+          set +e
+
           LATEST_VERSION="${{ steps.check.outputs.latest }}"
           UPSTREAM_TAG="${{ steps.check.outputs.upstream_tag }}"
           BASE_TAG="${{ steps.base.outputs.base_tag }}"
           BRANCH_NAME="update-to-${LATEST_VERSION}"
-          
+
           echo "Rebasing from $BASE_TAG to $UPSTREAM_TAG"
-          
-          # Check if upstream tag exists
+
+          {
+            echo "success=false"
+            echo "conflicts=false"
+            echo "needs_pr=false"
+            echo "needs_issue=false"
+            echo "branch_name="
+            echo "conflict_commit="
+            echo "conflict_commit_short="
+            echo "conflict_subject="
+            echo "custom_summary="
+            echo "applied_summary="
+            echo "error="
+          } >> $GITHUB_OUTPUT
+
           if ! git rev-parse "$UPSTREAM_TAG" >/dev/null 2>&1; then
             echo "❌ Upstream tag $UPSTREAM_TAG not found"
-            echo "success=false" >> $GITHUB_OUTPUT
             echo "error=upstream_tag_not_found" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
-          # Create branch from upstream tag
+
+          git branch -D "$BRANCH_NAME" 2>/dev/null || true
           git checkout -b "$BRANCH_NAME" "$UPSTREAM_TAG"
-          
-          # Get list of custom commits
+
           CUSTOM_COMMITS=$(git log --reverse --pretty=format:"%H" "$BASE_TAG..origin/main" 2>/dev/null || echo "")
-          
+          CUSTOM_SUMMARY=$(git log --reverse --pretty=format:"- %s (%h)" "$BASE_TAG..origin/main" 2>/dev/null || echo "")
+
+          if [ -n "$CUSTOM_SUMMARY" ]; then
+            {
+              echo "custom_summary<<EOF"
+              echo "$CUSTOM_SUMMARY"
+              echo "EOF"
+            } >> $GITHUB_OUTPUT
+          fi
+
           if [ -z "$CUSTOM_COMMITS" ]; then
             echo "⚠️  No custom commits found between $BASE_TAG and main"
-            echo "success=false" >> $GITHUB_OUTPUT
             echo "error=no_custom_commits" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
+
           echo "Custom commits to rebase:"
           echo "$CUSTOM_COMMITS"
-          
-          # Attempt to cherry-pick each commit
+
           CONFLICTS=false
+          CONFLICT_COMMIT=""
+          CONFLICT_SUBJECT=""
           for commit in $CUSTOM_COMMITS; do
             echo "Cherry-picking $commit..."
             if ! git cherry-pick "$commit"; then
               echo "❌ Conflict detected on commit $commit"
               CONFLICTS=true
+              CONFLICT_COMMIT="$commit"
+              CONFLICT_SUBJECT=$(git log -1 --pretty=format:"%s" "$commit")
               git cherry-pick --abort
               break
             fi
           done
-          
+
           if [ "$CONFLICTS" = true ]; then
-            echo "success=false" >> $GITHUB_OUTPUT
             echo "conflicts=true" >> $GITHUB_OUTPUT
-            
-            # Create conflict resolution branch for PR
-            git checkout -b "conflict-$BRANCH_NAME" "$UPSTREAM_TAG"
-            git push origin "conflict-$BRANCH_NAME"
-          else
-            echo "✅ Rebase successful"
-            echo "success=true" >> $GITHUB_OUTPUT
-            git push origin "$BRANCH_NAME"
+            echo "error=rebase_conflict" >> $GITHUB_OUTPUT
+
+            if [ -n "$CONFLICT_COMMIT" ]; then
+              echo "conflict_commit=$CONFLICT_COMMIT" >> $GITHUB_OUTPUT
+              echo "conflict_commit_short=$(git rev-parse --short "$CONFLICT_COMMIT")" >> $GITHUB_OUTPUT
+              echo "conflict_subject=$CONFLICT_SUBJECT" >> $GITHUB_OUTPUT
+            fi
+
+            AHEAD_COUNT=$(git rev-list --count "${UPSTREAM_TAG}..HEAD")
+
+            if [ "$AHEAD_COUNT" -gt 0 ]; then
+              echo "Some commits were applied before the conflict. Preparing branch $BRANCH_NAME for review."
+              set -e
+              git push origin "$BRANCH_NAME" --force-with-lease
+              echo "needs_pr=true" >> $GITHUB_OUTPUT
+              echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+              APPLIED_SUMMARY=$(git log --reverse --pretty=format:"- %s (%h)" "${UPSTREAM_TAG}..HEAD")
+              if [ -n "$APPLIED_SUMMARY" ]; then
+                {
+                  echo "applied_summary<<EOF"
+                  echo "$APPLIED_SUMMARY"
+                  echo "EOF"
+                } >> $GITHUB_OUTPUT
+              fi
+            else
+              echo "No commits were applied before the conflict. Creating issue for manual follow-up."
+              echo "needs_issue=true" >> $GITHUB_OUTPUT
+            fi
+            exit 0
           fi
+
+          echo "✅ Rebase successful"
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          set -e
+          git push origin "$BRANCH_NAME" --force-with-lease
       
       - name: 'Merge to main'
         if: steps.rebase.outputs.success == 'true'
@@ -177,34 +226,86 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: 'Create PR for conflicts'
-        if: steps.rebase.outputs.conflicts == 'true'
+      - name: 'Create PR for manual rebase'
+        if: steps.rebase.outputs.needs_pr == 'true'
         run: |
           LATEST_VERSION="${{ steps.check.outputs.latest }}"
           UPSTREAM_TAG="${{ steps.check.outputs.upstream_tag }}"
-          
+          BASE_TAG="${{ steps.base.outputs.base_tag }}"
+          BRANCH_NAME="${{ steps.rebase.outputs.branch_name }}"
+          CONFLICT_COMMIT="${{ steps.rebase.outputs.conflict_commit }}"
+          CONFLICT_COMMIT_SHORT="${{ steps.rebase.outputs.conflict_commit_short }}"
+          CONFLICT_SUBJECT="${{ steps.rebase.outputs.conflict_subject }}"
+          APPLIED_SUMMARY="${{ steps.rebase.outputs.applied_summary }}"
+          CUSTOM_SUMMARY="${{ steps.rebase.outputs.custom_summary }}"
+
+          CHERRY_PICK_COMMAND="${CONFLICT_COMMIT:-<commit-sha>}"
+          CHERRY_PICK_TARGET="${CONFLICT_COMMIT_SHORT:-the next commit}"
+
+          PR_BODY=$(mktemp)
+          cat <<EOF > "$PR_BODY"
+## Manual follow-up required
+
+The automated rebase from **$BASE_TAG** to **$UPSTREAM_TAG** stopped at commit ${CONFLICT_COMMIT_SHORT:-n/a}${CONFLICT_SUBJECT:+: $CONFLICT_SUBJECT}.
+
+Applied commits so far:
+${APPLIED_SUMMARY:-"(none yet)"}
+
+Remaining custom commits:
+${CUSTOM_SUMMARY:-"(see git log for details)"}
+
+### Next steps
+1. Fetch this branch: \`git fetch origin $BRANCH_NAME && git checkout $BRANCH_NAME\`
+2. Resume cherry-picking starting from ${CHERRY_PICK_TARGET}. Run \`git cherry-pick $CHERRY_PICK_COMMAND\`, resolve conflicts, and continue with \`git cherry-pick --continue\`.
+3. Run project checks and verify the CLI.
+4. Push updates: \`git push origin $BRANCH_NAME --force-with-lease\`.
+EOF
+
           gh pr create \
             --base main \
-            --head "conflict-update-to-${LATEST_VERSION}" \
-            --title "⚠️  Update to v${LATEST_VERSION} - Manual Resolution Required" \
-            --body "## Rebase Conflicts Detected
-          
-          The automatic rebase from **${{ steps.base.outputs.base_tag }}** to **${UPSTREAM_TAG}** encountered conflicts.
-          
-          ### What to do:
-          1. Checkout this branch: \`git fetch origin && git checkout conflict-update-to-${LATEST_VERSION}\`
-          2. Manually rebase: \`git rebase -i ${UPSTREAM_TAG}\`
-          3. Resolve conflicts
-          4. Force push: \`git push origin conflict-update-to-${LATEST_VERSION} --force\`
-          5. Merge this PR
-          
-          ### Custom commits to preserve:
-          - Custom keybinds and clipboard support
-          - Detailed logging  
-          - Custom system prompts
-          
-          After merging, manually run the workflow to create the release." \
-            --label "rebase-conflict,automation"
+            --head "$BRANCH_NAME" \
+            --title "Update to v${LATEST_VERSION} - manual follow-up required" \
+            --body-file "$PR_BODY"
+          rm "$PR_BODY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 'Create issue for manual update'
+        if: steps.rebase.outputs.needs_issue == 'true'
+        run: |
+          LATEST_VERSION="${{ steps.check.outputs.latest }}"
+          UPSTREAM_TAG="${{ steps.check.outputs.upstream_tag }}"
+          BASE_TAG="${{ steps.base.outputs.base_tag }}"
+          CONFLICT_COMMIT_SHORT="${{ steps.rebase.outputs.conflict_commit_short }}"
+          CONFLICT_SUBJECT="${{ steps.rebase.outputs.conflict_subject }}"
+          CUSTOM_SUMMARY="${{ steps.rebase.outputs.custom_summary }}"
+
+          CHERRY_PICK_COMMAND="${{ steps.rebase.outputs.conflict_commit }}"
+
+          if [ -z "$CHERRY_PICK_COMMAND" ]; then
+            CHERRY_PICK_COMMAND="<commit-sha>"
+          fi
+
+          ISSUE_BODY=$(mktemp)
+          cat <<EOF > "$ISSUE_BODY"
+## Manual update to v${LATEST_VERSION} required
+
+The automated rebase from **$BASE_TAG** to **$UPSTREAM_TAG** hit a conflict at commit ${CONFLICT_COMMIT_SHORT:-n/a}${CONFLICT_SUBJECT:+: $CONFLICT_SUBJECT} before any commits could be applied automatically.
+
+Custom commits to carry forward:
+${CUSTOM_SUMMARY:-"(review origin/main for custom commits)"}
+
+### Suggested steps
+1. Fetch upstream: \`git fetch upstream --tags\`
+2. Create a working branch from the upstream tag: \`git checkout -b update-to-${LATEST_VERSION} $UPSTREAM_TAG\`
+3. Cherry-pick commits from \`origin/main\` starting at ${CONFLICT_COMMIT_SHORT:-the first custom commit}. Begin with \`git cherry-pick $CHERRY_PICK_COMMAND\`.
+4. Resolve conflicts, push the branch, and create a PR when ready.
+EOF
+
+          gh issue create \
+            --title "Manual update to v${LATEST_VERSION} required" \
+            --body-file "$ISSUE_BODY"
+          rm "$ISSUE_BODY"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
@@ -220,8 +321,12 @@ jobs:
           if [ "${{ steps.rebase.outputs.success }}" = "true" ]; then
             echo "- ✅ Rebase successful" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ Release created" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ steps.rebase.outputs.conflicts }}" = "true" ]; then
-            echo "- ⚠️  Conflicts detected - PR created" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.rebase.outputs.needs_pr }}" = "true" ]; then
+            echo "- ⚠️  Conflicts detected - PR opened for manual follow-up" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.rebase.outputs.needs_issue }}" = "true" ]; then
+            echo "- ⚠️  Conflicts detected - Issue opened for manual follow-up" >> $GITHUB_STEP_SUMMARY
           elif [ "${{ steps.check.outputs.update_needed }}" = "false" ]; then
             echo "- ℹ️  Already up to date" >> $GITHUB_STEP_SUMMARY
+          elif [ -n "${{ steps.rebase.outputs.error }}" ]; then
+            echo "- ❌ Update blocked: ${{ steps.rebase.outputs.error }}" >> $GITHUB_STEP_SUMMARY
           fi
